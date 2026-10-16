@@ -7,4 +7,4 @@
 
 <resources
     xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@style/Theme.MaterialFiles*" />
+    tools:keep="@style/Theme.MaterialFiles*,@raw/su_v7a,@raw/tclsu" />

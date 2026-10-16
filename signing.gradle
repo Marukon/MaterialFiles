@@ -11,11 +11,20 @@ android {
                 return properties?.get(propertyName) ?: System.getenv(environmentName) ?:
                         System.console()?.readLine('\n' + prompt + ': ')
             }
-
-            storeFile getString('storeFile', 'STORE_FILE', 'Store file')?.with(rootProject.&file)
-            storePassword getString('storePassword', 'STORE_PASSWORD', 'Store password')
-            keyAlias getString('keyAlias', 'KEY_ALIAS', 'Key alias')
-            keyPassword getString('keyPassword', 'KEY_PASSWORD', 'Key password')
+            def path = getString('storeFile', 'STORE_FILE', 'Store file')
+            if (path != null && rootProject.file(path).exists()) {
+                storeFile rootProject.file(path)
+                storePassword getString('storePassword', 'STORE_PASSWORD', 'Store password')
+                keyAlias getString('keyAlias', 'KEY_ALIAS', 'Key alias')
+                keyPassword getString('keyPassword', 'KEY_PASSWORD', 'Key password')
+            } else if (path != null && new File(path).exists()) {
+                storeFile new File(path)
+                storePassword getString('storePassword', 'STORE_PASSWORD', 'Store password')
+                keyAlias getString('keyAlias', 'KEY_ALIAS', 'Key alias')
+                keyPassword getString('keyPassword', 'KEY_PASSWORD', 'Key password')
+            } else {
+                initWith(signingConfigs.debug)
+            }
         }
     }
 }
