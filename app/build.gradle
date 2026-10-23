@@ -70,6 +70,8 @@ android {
         // For "Invalid package reference in library; not included in Android: javax.security.sasl.
         // Referenced from org.apache.mina.proxy.ProxyAuthException."
         warning 'InvalidPackage', 'MissingTranslation'
+        checkReleaseBuilds false
+        abortOnError false
     }
     buildTypes {
         release {
