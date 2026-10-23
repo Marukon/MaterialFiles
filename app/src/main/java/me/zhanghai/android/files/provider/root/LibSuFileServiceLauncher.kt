@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import me.zhanghai.android.files.BuildConfig
 import me.zhanghai.android.files.R
 import me.zhanghai.android.files.app.application
 import me.zhanghai.android.files.provider.remote.IRemoteFileService
@@ -42,7 +43,7 @@ object LibSuFileServiceLauncher {
     private var detectedSuCommand: String? = null
 
     init {
-        Shell.enableVerboseLogging = true
+        Shell.enableVerboseLogging = BuildConfig.DEBUG
         Shell.setDefaultBuilder(
             CustomShellBuilder {
                 getOrFindSuCommand() ?: "su"
@@ -79,14 +80,10 @@ object LibSuFileServiceLauncher {
 
     private fun testSuCommand(command: String): Boolean {
         return try {
-            val process = Runtime.getRuntime().exec("$command --version")
+            val process = Runtime.getRuntime().exec(arrayOf(command, "-c", "id"))
+            val output = process.inputStream.bufferedReader().use { it.readText() }
             val exitCode = process.waitFor()
-            if (exitCode == 0) return true
-
-            val p2 = Runtime.getRuntime().exec(arrayOf(command, "-c", "id"))
-            val output = p2.inputStream.bufferedReader().use { it.readText() }
-            p2.waitFor()
-            output.contains("uid=0")
+            exitCode == 0 && output.contains("uid=0")
         } catch (e: Exception) {
             false
         }
@@ -107,12 +104,12 @@ object LibSuFileServiceLauncher {
             "/system/xbin/su",
             "/system/bin/tclsu",
             "/system/xbin/tclsu",
-            "tclsu",
             "/sbin/su",
-            "/vendor/bin/su"
+            "/vendor/bin/su",
+            "tclsu"
         )
         for (candidate in systemCandidates) {
-            if (File(candidate).exists() || !candidate.startsWith("/")) {
+            if (!candidate.startsWith("/") || File(candidate).exists()) {
                 if (testSuCommand(candidate)) {
                     Log.i(TAG, "Found working su candidate: $candidate")
                     detectedSuCommand = candidate
@@ -155,14 +152,14 @@ object LibSuFileServiceLauncher {
                             // Proactively create the shell because RootService doesn't allow us to
                             // handle errors during shell creation.
                             suspendCancellableCoroutine<Unit> { continuation ->
-                                // Shell.getShell(GetShellCallback) doesn't allow handling errors.
                                 Shell.EXECUTOR.submit {
                                     try {
                                         Shell.getShell()
                                         continuation.resume(Unit)
-                                    } catch (e: NoShellException) {
+                                    } catch (t: Throwable) {
+                                        Log.e(TAG, "Shell.getShell failed", t)
                                         continuation.resumeWithException(
-                                            RemoteFileSystemException(e)
+                                            RemoteFileSystemException(t)
                                         )
                                     }
                                 }
@@ -206,10 +203,21 @@ object LibSuFileServiceLauncher {
                                     }
                                 }
                                 launch(Dispatchers.Main.immediate) {
-                                    RootService.bind(intent, connection)
+                                    try {
+                                        RootService.bind(intent, connection)
+                                    } catch (t: Throwable) {
+                                        Log.e(TAG, "RootService.bind threw exception on Main thread", t)
+                                        if (continuation.isActive) {
+                                            continuation.resumeWithException(RemoteFileSystemException(t))
+                                        }
+                                    }
                                     continuation.invokeOnCancellation {
                                         launch(Dispatchers.Main.immediate) {
-                                            RootService.unbind(connection)
+                                            try {
+                                                RootService.unbind(connection)
+                                            } catch (t: Throwable) {
+                                                Log.w(TAG, "RootService.unbind failed", t)
+                                            }
                                         }
                                     }
                                 }
@@ -226,33 +234,42 @@ object LibSuFileServiceLauncher {
     }
 
     private class CustomShellBuilder(private val commandProvider: () -> String) : Shell.Builder() {
-        private val delegate = Shell.Builder.create()
-            .setInitializers(LibSuShellInitializer::class.java)
-            .setFlags(Shell.FLAG_MOUNT_MASTER or Shell.FLAG_REDIRECT_STDERR)
-            .setTimeout(TimeUnit.MILLISECONDS.toSeconds(RootFileService.TIMEOUT_MILLIS))
+        private var customFlags: Int = Shell.FLAG_REDIRECT_STDERR
+        private var customTimeout: Long = TimeUnit.MILLISECONDS.toSeconds(RootFileService.TIMEOUT_MILLIS)
 
         override fun setFlags(flags: Int): Shell.Builder {
-            delegate.setFlags(flags)
+            // Strip FLAG_MOUNT_MASTER to prevent vehicle su failure (unknown option --mount-master)
+            customFlags = flags and Shell.FLAG_MOUNT_MASTER.inv()
             return this
         }
 
         override fun setTimeout(timeout: Long): Shell.Builder {
-            delegate.setTimeout(timeout)
+            customTimeout = timeout
             return this
         }
 
         override fun build(): Shell {
             val cmd = commandProvider()
-            return delegate.build(cmd)
+            return createFreshBuilder().build(cmd)
         }
 
         override fun build(vararg commands: String): Shell {
-            return delegate.build(*commands)
+            return if (commands.isEmpty()) {
+                build()
+            } else {
+                createFreshBuilder().build(*commands)
+            }
         }
 
         override fun build(process: Process): Shell {
-            return delegate.build(process)
+            return createFreshBuilder().build(process)
         }
+
+        private fun createFreshBuilder(): Shell.Builder =
+            Shell.Builder.create()
+                .setInitializers(LibSuShellInitializer::class.java)
+                .setFlags(customFlags)
+                .setTimeout(customTimeout)
     }
 }
 
@@ -265,7 +282,11 @@ class LibSuFileService : RootService() {
     override fun onCreate() {
         super.onCreate()
 
-        RootFileService.main()
+        try {
+            RootFileService.main(this)
+        } catch (t: Throwable) {
+            Log.e("LibSuFileService", "RootFileService.main failed in RootService", t)
+        }
     }
 
     override fun onBind(intent: Intent): IBinder = RemoteFileServiceInterface()

@@ -15,6 +15,7 @@ import me.zhanghai.android.files.provider.FileSystemProviders
 import me.zhanghai.android.files.provider.remote.RemoteFileService
 import me.zhanghai.android.files.provider.remote.RemoteInterface
 import me.zhanghai.android.files.util.lazyReflectedMethod
+import java.io.File
 
 // We are expanding our root file service to shell UID, but let's keep the original name since it's
 // a bit awkward to express root-or-shell-UID in one or two words.
@@ -50,17 +51,37 @@ object RootFileService : RemoteFileService(
         "android.app.ActivityThread", "getSystemContext"
     )
 
-    fun main() {
+    fun main(context: Context? = null) {
         Log.i(LOG_TAG, "Creating package context")
-        rootContext = createPackageContext(BuildConfig.APPLICATION_ID)
+        rootContext = try {
+            context ?: createPackageContext(BuildConfig.APPLICATION_ID)
+        } catch (t: Throwable) {
+            Log.w(LOG_TAG, "Failed to create package context via reflection", t)
+            context ?: throw t
+        }
+        preloadNativeLibraries(rootContext)
         Log.i(LOG_TAG, "Installing file system providers")
         FileSystemProviders.install()
         FileSystemProviders.overflowWatchEvents = true
     }
 
+    private fun preloadNativeLibraries(context: Context) {
+        try {
+            val nativeDir = File(context.applicationInfo.nativeLibraryDir)
+            val syscallSo = File(nativeDir, "libsyscall.so")
+            if (syscallSo.exists()) {
+                System.load(syscallSo.absolutePath)
+            }
+        } catch (t: Throwable) {
+            Log.w(LOG_TAG, "Failed to preload libsyscall.so: ${t.message}")
+        }
+    }
+
     private fun createPackageContext(packageName: String): Context {
         val activityThread = activityThreadCurrentActivityThreadMethod.invoke(null)
-        val systemContext = activityThreadGetSystemContextMethod.invoke(activityThread) as Context
+            ?: throw IllegalStateException("ActivityThread.currentActivityThread() returned null")
+        val systemContext = activityThreadGetSystemContextMethod.invoke(activityThread) as? Context
+            ?: throw IllegalStateException("ActivityThread.getSystemContext() returned null")
         return systemContext.createPackageContext(
             packageName, Context.CONTEXT_IGNORE_SECURITY or Context.CONTEXT_INCLUDE_CODE
         )

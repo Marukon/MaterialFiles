@@ -400,6 +400,10 @@
                 android:value="true" />
         </service>
 
+        <service
+            android:name="me.zhanghai.android.files.provider.root.LibSuFileService"
+            android:exported="false" />
+
         <provider
             android:name="me.zhanghai.android.files.app.AppProvider"
             android:authorities="@string/app_provider_authority"

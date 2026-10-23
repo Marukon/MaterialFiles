@@ -21,7 +21,25 @@ import me.zhanghai.android.libselinux.SeLinux
 
 object Syscall {
     init {
-        System.loadLibrary("syscall")
+        try {
+            System.loadLibrary("syscall")
+        } catch (e: UnsatisfiedLinkError) {
+            var loaded = false
+            try {
+                val context = me.zhanghai.android.files.provider.root.rootContext
+                val nativeDir = java.io.File(context.applicationInfo.nativeLibraryDir)
+                val syscallSo = java.io.File(nativeDir, "libsyscall.so")
+                if (syscallSo.exists()) {
+                    System.load(syscallSo.absolutePath)
+                    loaded = true
+                }
+            } catch (t: Throwable) {
+                // Ignore fallback failure
+            }
+            if (!loaded) {
+                throw e
+            }
+        }
     }
 
     @Throws(SyscallException::class)
